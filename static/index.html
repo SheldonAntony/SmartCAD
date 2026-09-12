@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SmartCAD</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #d9dce1; --text: #1e2430;
+    --muted: #6b7280; --accent: #2563eb;
+    --ok: #16a34a; --warn: #d97706; --fail: #dc2626;
+    --zone-social: #cfe8ff; --zone-service: #ffe4c4; --zone-private: #d9f2e0; --zone-circ: #e3d9f5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 12px 20px; background: #111827; color: #fff; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .tagline { font-size: 12px; color: #9ca3af; }
+  .layout { display: grid; grid-template-columns: 320px 1fr 300px; gap: 14px; padding: 14px; align-items: start; }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; color: #374151; text-transform: uppercase; letter-spacing: .04em; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .checkline { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+  .checkline label { margin: 0; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 12px; font-size: 13px; font-weight: 600; }
+  #generateBtn { width: 100%; margin-top: 14px; background: var(--accent); color: #fff; padding: 10px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .presets button { background: #eef2ff; color: #3730a3; font-weight: 500; }
+  .presets button:hover { background: #e0e7ff; }
+  #aiBrief { width: 100%; height: 54px; font-size: 12px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; resize: vertical; }
+  #parseBtn { width: 100%; margin-top: 6px; background: #0891b2; color: #fff; }
+  #aiSpecEcho { font-size: 11px; color: var(--muted); margin-top: 6px; white-space: pre-wrap; }
+  .center-col { display: flex; flex-direction: column; gap: 12px; }
+  .viewTabs { display: flex; gap: 6px; }
+  .viewTabs button { background: #eee; color: #374151; }
+  .viewTabs button.active { background: var(--accent); color: #fff; }
+  .floorTabs { display: flex; gap: 6px; }
+  .floorTabs button { background: #eee; color: #374151; padding: 6px 14px; }
+  .floorTabs button.active { background: #111827; color: #fff; }
+  #canvasWrap { position: relative; background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  #plan3d { width: 100%; height: 560px; display: none; }
+  svg#plan2d { width: 100%; height: 560px; display: block; }
+  #score-badge { position: absolute; top: 10px; right: 10px; background: rgba(17,24,39,.85); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 12px; }
+  #tooltip { position: absolute; pointer-events: none; background: #111827; color: #fff; font-size: 11px; padding: 4px 8px; border-radius: 4px; display: none; z-index: 5; }
+  #legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+  #legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .issue { font-size: 12px; padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; border-left: 4px solid; }
+  .issue.ok { background: #f0fdf4; border-color: var(--ok); }
+  .issue.warn { background: #fffbeb; border-color: var(--warn); }
+  .issue.fail { background: #fef2f2; border-color: var(--fail); }
+  .issue .msg { font-weight: 600; }
+  .issue .nums { color: var(--muted); }
+  #issuesSummary { font-size: 13px; margin-bottom: 10px; font-weight: 600; }
+  #costTable { width: 100%; font-size: 12px; border-collapse: collapse; margin-top: 8px; }
+  #costTable td, #costTable th { padding: 4px 2px; border-bottom: 1px solid var(--border); text-align: right; }
+  #costTable th:first-child, #costTable td:first-child { text-align: left; }
+  #costTotal { font-weight: 700; font-size: 14px; margin-top: 8px; }
+  #aiCritique { font-size: 12px; color: #374151; white-space: pre-wrap; margin-top: 8px; }
+  #loadingSpinner { display: none; position: absolute; inset: 0; background: rgba(255,255,255,.7); align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--accent); }
+  #errorBanner { display: none; background: #fef2f2; color: var(--fail); border: 1px solid #fecaca; padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>SmartCAD</h1>
+    <div class="tagline">AI-assisted architectural &amp; spatial planning -- deterministic geometry, guaranteed by construction</div>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="panel" id="controls">
+    <h2>Parameters</h2>
+    <div id="errorBanner"></div>
+
+    <label>AI brief (optional)</label>
+    <textarea id="aiBrief" placeholder="e.g. 30x40 plot, 3 bedrooms, 2 floors, car parking, balcony"></textarea>
+    <button id="parseBtn">Parse with AI</button>
+    <div id="aiSpecEcho"></div>
+
+    <label>Plot width (ft)</label>
+    <input type="number" id="plot_width_ft" value="40" min="10" step="1">
+    <label>Plot depth (ft)</label>
+    <input type="number" id="plot_depth_ft" value="60" min="10" step="1">
+
+    <div class="row2">
+      <div>
+        <label>Floors</label>
+        <input type="number" id="floors" value="2" min="1" max="4" step="1">
+      </div>
+      <div>
+        <label>Bedrooms</label>
+        <input type="number" id="bedrooms" value="3" min="0" max="10" step="1">
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>Bathrooms</label>
+        <input type="number" id="bathrooms" value="2" min="0" max="10" step="1">
+      </div>
+      <div></div>
+    </div>
+    <div class="checkline"><input type="checkbox" id="parking" checked><label for="parking">Car parking</label></div>
+    <div class="checkline"><input type="checkbox" id="balcony" checked><label for="balcony">Balcony</label></div>
+
+    <label>Setbacks (m) -- front / rear / left / right</label>
+    <div class="row2">
+      <input type="number" id="setback_front_m" value="3.0" step="0.1">
+      <input type="number" id="setback_rear_m" value="1.5" step="0.1">
+    </div>
+    <div class="row2" style="margin-top:6px">
+      <input type="number" id="setback_left_m" value="1.2" step="0.1">
+      <input type="number" id="setback_right_m" value="1.2" step="0.1">
+    </div>
+
+    <label style="margin-top:14px">Cost rates (Rs.)</label>
+    <div class="row2">
+      <div><label style="margin-top:0">Structure /sqft</label><input type="number" id="rate_structure" value="1600"></div>
+      <div><label style="margin-top:0">Finishes /sqft</label><input type="number" id="rate_finishes" value="450"></div>
+    </div>
+    <div class="row2" style="margin-top:6px">
+      <div><label style="margin-top:0">Electrical /sqft</label><input type="number" id="rate_electrical" value="180"></div>
+      <div><label style="margin-top:0">Plumbing /bathroom</label><input type="number" id="rate_plumbing" value="45000"></div>
+    </div>
+    <label style="margin-top:6px">Parking /sqft</label>
+    <input type="number" id="rate_parking" value="800">
+
+    <button id="generateBtn">Generate Plan</button>
+
+    <h2 style="margin-top:16px">Presets</h2>
+    <div class="presets">
+      <button data-preset="3bhk">40x60 3BHK</button>
+      <button data-preset="2bhk">30x45 2BHK</button>
+      <button data-preset="tiny">Tiny plot (fails)</button>
+    </div>
+  </div>
+
+  <div class="center-col">
+    <div class="panel" style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px;">
+      <div class="floorTabs" id="floorTabs"></div>
+      <div class="viewTabs">
+        <button id="tab2d" class="active">2D</button>
+        <button id="tab3d">3D</button>
+      </div>
+    </div>
+    <div id="canvasWrap">
+      <svg id="plan2d" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="plan3d"></div>
+      <div id="score-badge">adjacency score --</div>
+      <div id="tooltip"></div>
+      <div id="loadingSpinner">Generating plan...</div>
+    </div>
+    <div class="panel">
+      <div id="legend">
+        <span><span class="swatch" style="background:var(--zone-social)"></span>Social</span>
+        <span><span class="swatch" style="background:var(--zone-service)"></span>Service</span>
+        <span><span class="swatch" style="background:var(--zone-private)"></span>Private</span>
+        <span><span class="swatch" style="background:var(--zone-circ)"></span>Circulation</span>
+        <span><span class="swatch" style="background:#22c55e"></span>Adjacency link</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>AI Critique</h2>
+      <button id="critiqueBtn" style="background:#0891b2;color:#fff;">Get AI Critique</button>
+      <div id="aiCritique">Not requested yet.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="rightPanel">
+    <h2>Validation</h2>
+    <div id="issuesSummary"></div>
+    <div id="issuesList"></div>
+
+    <h2 style="margin-top:16px">Cost Estimate</h2>
+    <table id="costTable"><tbody></tbody></table>
+    <div id="costTotal"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="render2d.js"></script>
+<script src="render3d.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
