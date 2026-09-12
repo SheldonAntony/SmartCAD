@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "1.0",
+  "units": "ft",
+
+  "plot": {
+    "width": 30,
+    "length": 40,
+
+    "boundary": [
+      [0, 0],
+      [30, 0],
+      [30, 40],
+      [0, 40]
+    ],
+
+    "setbacks": {
+      "front": 5,
+      "back": 5,
+      "left": 3,
+      "right": 3
+    }
+  },
+
+  "building": {
+    "floors": [
+      {
+        "id": "F1",
+        "level": 0,
+
+        "floorHeight": 10,
+        "slabThickness": 0.5,
+
+        "rooms": [
+          {
+            "id": "R1",
+            "name": "Living Room",
+            "targetArea": 200,
+
+            "geometry": [
+              [3, 5],
+              [17, 5],
+              [17, 19.3],
+              [3, 19.3]
+            ]
+          },
+          {
+            "id": "R2",
+            "name": "Kitchen",
+            "targetArea": 100,
+
+            "geometry": [
+              [17, 5],
+              [27, 5],
+              [27, 15],
+              [17, 15]
+            ]
+          }
+        ],
+
+        "walls": [
+          {
+            "id": "W1",
+            "start": [3, 5],
+            "end": [17, 5],
+            "height": 10,
+            "thickness": 0.5,
+            "type": "external"
+          },
+          {
+            "id": "W2",
+            "start": [17, 5],
+            "end": [17, 19.3],
+            "height": 10,
+            "thickness": 0.5,
+            "type": "internal"
+          }
+        ],
+
+        "openings": [
+          {
+            "id": "D1",
+            "type": "door",
+            "wallId": "W1",
+            "offset": 5,
+            "width": 3,
+            "height": 7,
+            "swing": "left"
+          },
+          {
+            "id": "WIN1",
+            "type": "window",
+            "wallId": "W1",
+            "offset": 10,
+            "width": 4,
+            "height": 4,
+            "sillHeight": 3
+          }
+        ],
+
+        "stairs": [
+          {
+            "id": "S1",
+            "position": [20, 20],
+            "width": 6,
+            "length": 12,
+            "toFloor": "F2",
+            "stepCount": 18
+          }
+        ]
+      },
+
+      {
+        "id": "F2",
+        "level": 1,
+
+        "floorHeight": 10,
+        "slabThickness": 0.5,
+
+        "rooms": [],
+        "walls": [],
+        "openings": [],
+        "stairs": []
+      }
+    ]
+  },
+
+  "relationships": [
+    {
+      "from": "R1",
+      "to": "R2",
+      "type": "near",
+      "maxDistance": 6
+    },
+    {
+      "from": "R1",
+      "to": "S1",
+      "type": "near"
+    }
+  ],
+
+  "validation": {
+    "status": "VALID",
+    "errors": [],
+    "warnings": []
+  }
+}
