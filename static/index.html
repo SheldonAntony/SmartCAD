@@ -58,8 +58,24 @@
   #costTable td, #costTable th { padding: 4px 2px; border-bottom: 1px solid var(--border); text-align: right; }
   #costTable th:first-child, #costTable td:first-child { text-align: left; }
   #costTotal { font-weight: 700; font-size: 14px; margin-top: 8px; }
+  #recPanel { display: none; }
+  #recPanel .recHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  #recPanel .recHead span { font-size: 12px; color: var(--muted); }
+  #aiRecBtn { background: #7c3aed; color: #fff; font-size: 12px; padding: 6px 10px; }
+  #aiRecBtn:disabled { background: #c4b5fd; cursor: default; }
+  .rec { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; background: #fbfcfe; }
+  .rec.clears { border-left-color: var(--ok); background: #f6fef9; }
+  .rec .recTitle { font-weight: 700; font-size: 12.5px; }
+  .rec .recChange { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: #1f2937; margin-top: 3px; }
+  .rec .recWhy { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
+  .rec .recFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
+  .recBadge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: #fee2e2; color: #991b1b; }
+  .recBadge.clears { background: #dcfce7; color: #166534; }
+  .rec button { background: var(--accent); color: #fff; font-size: 11.5px; padding: 5px 10px; }
+  #recSource { font-size: 11px; color: var(--muted); margin-top: 4px; }
   #aiCritique { font-size: 12px; color: #374151; white-space: pre-wrap; margin-top: 8px; }
   #loadingSpinner { display: none; position: absolute; inset: 0; background: rgba(255,255,255,.7); align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--accent); }
+  #noteBanner { display: none; background: #fffbeb; color: #92400e; border: 1px solid #fde68a; padding: 8px 10px; border-radius: 8px; font-size: 12px; margin-bottom: 10px; line-height: 1.5; }
   #errorBanner { display: none; background: #fef2f2; color: var(--fail); border: 1px solid #fecaca; padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
 </style>
 </head>
@@ -75,12 +91,9 @@
   <div class="panel" id="controls">
     <h2>Parameters</h2>
     <div id="errorBanner"></div>
+    <div id="noteBanner"></div>
 
-    <label>AI brief (optional)</label>
-    <textarea id="aiBrief" placeholder="e.g. 30x40 plot, 3 bedrooms, 2 floors, car parking, balcony"></textarea>
-    <button id="parseBtn">Parse with AI</button>
-    <div id="aiSpecEcho"></div>
-
+    
     <label>Plot width (ft)</label>
     <input type="number" id="plot_width_ft" value="40" min="10" step="1">
     <label>Plot depth (ft)</label>
@@ -134,7 +147,7 @@
     <div class="presets">
       <button data-preset="3bhk">40x60 3BHK</button>
       <button data-preset="2bhk">30x45 2BHK</button>
-      <button data-preset="tiny">Tiny plot (fails)</button>
+      <button data-preset="tiny">Tiny plot (demo: infeasible)</button>
     </div>
   </div>
 
@@ -163,20 +176,26 @@
       </div>
     </div>
     <div class="panel">
-      <h2>AI Critique</h2>
-      <button id="critiqueBtn" style="background:#0891b2;color:#fff;">Get AI Critique</button>
-      <div id="aiCritique">Not requested yet.</div>
+      <h2 style="margin-top:16px">Cost Estimate</h2>
+      <table id="costTable"><tbody></tbody></table>
+      <div id="costTotal"></div>
     </div>
   </div>
 
   <div class="panel" id="rightPanel">
+    <div id="recPanel">
+      <div class="recHead">
+        <h2 style="margin:0">How to fix it</h2>
+        <button id="aiRecBtn">Ask AI</button>
+      </div>
+      <span id="recHint" style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:8px"></span>
+      <div id="recList"></div>
+      <div id="recSource"></div>
+    </div>
     <h2>Validation</h2>
     <div id="issuesSummary"></div>
     <div id="issuesList"></div>
 
-    <h2 style="margin-top:16px">Cost Estimate</h2>
-    <table id="costTable"><tbody></tbody></table>
-    <div id="costTotal"></div>
   </div>
 </div>
 

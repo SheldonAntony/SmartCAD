@@ -75,16 +75,40 @@ async function generate() {
     }
     const plan = await res.json();
     state.plan = plan;
-    state.currentFloor = 0;
+    // Stay on the floor the user was looking at. Resetting to 0 on every
+    // regenerate bounced them to the ground floor whenever they nudged a rate.
+    const maxFloor = (plan.floors && plan.floors.length) ? plan.floors.length - 1 : 0;
+    state.currentFloor = Math.min(state.currentFloor, maxFloor);
+    renderNotes();
     renderFloorTabs();
     renderAll();
     renderIssues();
     if (window.renderCost) window.renderCost();
+    // Rule-based fixes are fast (~0.4 s) so they load automatically; the AI
+    // pass costs ~7 s and a token, so it stays behind a button.
+    const failing = (plan.issues || []).filter(i => i.level === "fail").length;
+    if (failing > 0 || !plan.ok) fetchRecommendations(false);
+    else renderRecommendations(null);
   } catch (err) {
     showError(err.message || String(err));
   } finally {
     el("loadingSpinner").style.display = "none";
   }
+}
+
+let _genTimer = null;
+function debouncedGenerate() {
+  if (_genTimer) clearTimeout(_genTimer);
+  _genTimer = setTimeout(generate, 160);
+}
+
+function renderNotes() {
+  const b = el("noteBanner");
+  if (!b) return;
+  const notes = (state.plan && state.plan.notes) || [];
+  if (!notes.length) { b.style.display = "none"; b.textContent = ""; return; }
+  b.style.display = "block";
+  b.textContent = notes.join("  ");
 }
 
 function renderFloorTabs() {
@@ -147,6 +171,89 @@ function renderIssues() {
   });
 }
 
+// ---- recommendations -------------------------------------------------------
+
+function applyRecommendation(patch) {
+  Object.keys(patch).forEach(key => {
+    const input = el(key);
+    if (!input) return;
+    if (input.type === "checkbox") input.checked = !!patch[key];
+    else input.value = patch[key];
+  });
+  generate();
+}
+
+function renderRecommendations(data, loading) {
+  const panel = el("recPanel"), list = el("recList");
+  const hint = el("recHint"), src = el("recSource");
+  if (!panel) return;
+  if (!data && !loading) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  list.innerHTML = "";
+
+  if (loading) { hint.textContent = "Checking which changes would actually fix it..."; src.textContent = ""; return; }
+
+  const recs = data.recommendations || [];
+  hint.textContent = data.fails_before
+    ? `${data.fails_before} failing check${data.fails_before > 1 ? "s" : ""}. Each option below was re-run through the engine, so the numbers are measured, not guessed.`
+    : "";
+
+  if (!recs.length) {
+    const d = document.createElement("div");
+    d.className = "rec";
+    d.innerHTML = `<div class="recWhy">${data.message || "No suggestion available."}</div>`;
+    list.appendChild(d);
+  }
+
+  recs.forEach(rec => {
+    const d = document.createElement("div");
+    d.className = "rec" + (rec.resolves_all ? " clears" : "");
+    const badge = rec.resolves_all
+      ? `<span class="recBadge clears">${rec.fails_before} -> 0 · all clear</span>`
+      : `<span class="recBadge">${rec.fails_before} -> ${rec.fails_after} left</span>`;
+    const cost = rec.cost_after
+      ? ` · Rs ${Number(rec.cost_after).toLocaleString("en-IN")}` : "";
+    d.innerHTML =
+      `<div class="recTitle">${rec.title}</div>` +
+      `<div class="recChange">${rec.change}</div>` +
+      `<div class="recWhy">${rec.why || ""}</div>` +
+      `<div class="recFoot">${badge}<span></span></div>`;
+    const foot = d.querySelector(".recFoot");
+    const meta = foot.lastElementChild;
+    meta.style.cssText = "font-size:11px;color:var(--muted);margin-left:auto;margin-right:8px";
+    meta.textContent = (rec.footprint_after ? `${rec.footprint_after} m2` : "") + cost;
+    const btn = document.createElement("button");
+    btn.textContent = "Apply";
+    btn.addEventListener("click", () => applyRecommendation(rec.patch));
+    foot.appendChild(btn);
+    list.appendChild(d);
+  });
+
+  src.textContent = data.source === "ai"
+    ? "Proposed by AI, verified by the engine."
+    : (data.error ? `Rule-based (AI unavailable: ${data.error})`
+                  : "Rule-based. Press “Ask AI” for model-proposed options.");
+}
+
+async function fetchRecommendations(useAi) {
+  const btn = el("aiRecBtn");
+  renderRecommendations(null, true);
+  if (useAi && btn) { btn.disabled = true; btn.textContent = "Thinking..."; }
+  try {
+    const res = await fetch("/api/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec: readSpecFromForm(), use_ai: !!useAi }),
+    });
+    renderRecommendations(await res.json());
+  } catch (err) {
+    renderRecommendations({ recommendations: [], fails_before: 0,
+                            message: "Could not load suggestions: " + err.message });
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Ask AI"; }
+  }
+}
+
 function renderCost() {
   const tbody = document.querySelector("#costTable tbody");
   tbody.innerHTML = "";
@@ -164,7 +271,10 @@ function renderCost() {
     tr.innerHTML = `<td>${item.label}</td><td>Rs ${item.rate}/${item.unit}</td><td>${item.qty}</td><td>Rs ${item.amount.toLocaleString("en-IN")}</td>`;
     tbody.appendChild(tr);
   });
-  totalEl.textContent = `Total: Rs ${cost.total.toLocaleString("en-IN")}  (built-up ${cost.built_up_sqft} sqft)`;
+  totalEl.textContent =
+    `Total: Rs ${cost.total.toLocaleString("en-IN")}  (enclosed ${cost.built_up_sqft} sqft`
+    + (cost.open_sqft ? ` + ${cost.open_sqft} sqft open` : "")
+    + ` over ${cost.floors} floor${cost.floors > 1 ? "s" : ""})`;
 }
 window.renderCost = renderCost;
 
@@ -201,10 +311,14 @@ function wireEvents() {
   ["plot_width_ft", "plot_depth_ft", "floors", "bedrooms", "bathrooms",
    "setback_front_m", "setback_rear_m", "setback_left_m", "setback_right_m",
    "rate_structure", "rate_finishes", "rate_electrical", "rate_plumbing", "rate_parking"].forEach(id => {
-    el(id).addEventListener("change", generate);
+    el(id).addEventListener("change", debouncedGenerate);
   });
-  el("parking").addEventListener("change", generate);
-  el("balcony").addEventListener("change", generate);
+  el("parking").addEventListener("change", debouncedGenerate);
+  el("balcony").addEventListener("change", debouncedGenerate);
+
+  if (el("aiRecBtn")) {
+    el("aiRecBtn").addEventListener("click", () => fetchRecommendations(true));
+  }
 
   if (el("critiqueBtn")) {
     el("critiqueBtn").addEventListener("click", async () => {
@@ -214,10 +328,12 @@ function wireEvents() {
         const res = await fetch("/api/critique", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plan: state.plan, issues: state.plan.issues || [] }),
+          body: JSON.stringify({ spec: readSpecFromForm() }),
         });
         const data = await res.json();
-        el("aiCritique").textContent = data.critique || "AI critique unavailable right now -- validation panel above still covers correctness.";
+        el("aiCritique").textContent = data.critique
+          || ("AI critique unavailable: " + (data.error || "unknown reason")
+              + " -- the validation panel above still covers correctness.");
       } catch (err) {
         el("aiCritique").textContent = "AI critique unavailable right now -- validation panel above still covers correctness.";
       }
@@ -241,7 +357,8 @@ function wireEvents() {
           el("aiSpecEcho").textContent = "AI-extracted spec:\n" + JSON.stringify(data.spec, null, 2);
           generate();
         } else {
-          el("aiSpecEcho").textContent = "AI parsing unavailable -- using slider values instead.";
+          el("aiSpecEcho").textContent =
+            "AI parsing unavailable: " + (data.error || "unknown reason") + " -- using the form values instead.";
         }
       } catch (err) {
         el("aiSpecEcho").textContent = "AI parsing unavailable -- using slider values instead.";

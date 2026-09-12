@@ -20,11 +20,11 @@ import math
 import random
 
 from .models import ProjectSpec
-from .rooms import ACCESS_PARENTS, ADJACENCY, HUB_TYPES, ROOM_SPECS, normalize_type
+from .rooms import ACCESS_PARENTS, ADJACENCY, ROOM_SPECS, normalize_type
 
 FT_TO_M = 0.3048
 RNG_SEED = 42
-N_CANDIDATES = 500
+N_CANDIDATES = 900
 ASPECT_LIMIT = 3.0            # single source of truth; validator imports this
 
 MIN_BAY = 2.4                 # m -- below this a bay is not a usable room width
@@ -33,6 +33,7 @@ CIRCULATION_ALLOWANCE = 0.12  # fraction of programme area lost to walls/passage
 DOOR_CLEAR = 0.9              # m -- a shorter shared wall cannot hold a door
 PARKING_LEN = 5.0             # m -- standard car
 PARKING_WID = 2.5
+CORRIDOR_W = 1.2             # m -- clear width of an upper-floor landing
 EPS = 0.02
 
 
@@ -97,15 +98,22 @@ def make_grid(fp: Rect, min_cells: int = 1):
 
 
 def _snap(target, lines, lo, hi, margin=0.35):
-    """Nearest grid line strictly inside (lo, hi); None if the span is too
-    narrow to be cut on the grid at all."""
+    """Nearest grid line strictly inside (lo, hi), but ONLY if it is close
+    enough to the area the budget actually asked for.
+
+    Snapping unconditionally is worse than not snapping at all: it quantises
+    every room to a whole bay, which is how a kitchen ends up at 17.5 m^2
+    against a 14 m^2 maximum. Beyond the tolerance the cut is a light partition
+    inside the bay instead -- the columns are unaffected either way."""
     inner = [v for v in lines if lo + margin < v < hi - margin]
     if not inner:
         return None
-    return min(inner, key=lambda v: abs(v - target))
+    best = min(inner, key=lambda v: abs(v - target))
+    tol = max(0.30, 0.08 * (hi - lo))
+    return best if abs(best - target) <= tol else None
 
 
-def split(rect: Rect, rooms: list, gx: list, gy: list) -> list:
+def split(rect: Rect, rooms: list, gx: list, gy: list, axis_lock=None) -> list:
     """Recursive rectangle tiling. Every cut snaps to a structural grid line
     when one is available in that axis, so partition walls land on beam lines.
     A span narrower than one bay falls back to a free cut -- that wall is a
@@ -128,7 +136,7 @@ def split(rect: Rect, rooms: list, gx: list, gy: list) -> list:
     frac = sum(r["area"] for r in A) / total
     x, y, w, h = rect.x, rect.y, rect.w, rect.h
 
-    order = ["x", "y"] if w >= h else ["y", "x"]
+    order = [axis_lock] if axis_lock else (["x", "y"] if w >= h else ["y", "x"])
     cut_axis, cut = None, None
     for axis_name in order:
         c = (_snap(x + w * frac, gx, x, x + w) if axis_name == "x"
@@ -141,10 +149,10 @@ def split(rect: Rect, rooms: list, gx: list, gy: list) -> list:
         cut = (x + w * frac) if cut_axis == "x" else (y + h * frac)
 
     if cut_axis == "x":
-        return (split(Rect(x, y, cut - x, h), A, gx, gy)
-                + split(Rect(cut, y, x + w - cut, h), B, gx, gy))
-    return (split(Rect(x, y, w, cut - y), A, gx, gy)
-            + split(Rect(x, cut, w, y + h - cut), B, gx, gy))
+        return (split(Rect(x, y, cut - x, h), A, gx, gy, axis_lock)
+                + split(Rect(cut, y, x + w - cut, h), B, gx, gy, axis_lock))
+    return (split(Rect(x, y, w, cut - y), A, gx, gy, axis_lock)
+            + split(Rect(x, cut, w, y + h - cut), B, gx, gy, axis_lock))
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +256,10 @@ def build_access_graph(items: list, root_types: tuple):
                 continue
             allowed = ACCESS_PARENTS.get(room["type"], set())
             for cand in neigh[rid]:
+                # ACCESS_PARENTS already encodes "never route onward through a
+                # terminal room": no terminal type appears as anyone's parent
+                # except the attached bath/balcony-off-a-bedroom case.
                 if cand["id"] not in reachable or cand["type"] not in allowed:
-                    continue
-                # you may ENTER a terminal room, never route onward through it
-                if cand["type"] not in HUB_TYPES and cand["id"] not in reachable:
                     continue
                 reachable.add(rid)
                 parent_of[rid] = cand["id"]
@@ -344,7 +352,9 @@ def deal_to_regions(rooms: list, regions: list) -> list:
     return groups
 
 
-def best_split(regions, rooms, fixed, fp, gx, gy, root_types, rng, tag="F"):
+def best_split(regions, rooms, fixed, fp, gx, gy, root_types, rng, tag="F",
+               axis_lock=None, effort=N_CANDIDATES):
+    axis_options = [axis_lock, None] if axis_lock else [None]
     """Search shuffles of the room order. The order drives BOTH which region a
     room lands in and how the region is subdivided, so one shuffle explores
     both decisions at once. Regions are fixed rectangles shared by every floor,
@@ -352,9 +362,10 @@ def best_split(regions, rooms, fixed, fp, gx, gy, root_types, rng, tag="F"):
     if not rooms:
         return [], 0.0
     best_key, best_placed, best_adj = None, None, 0.0
-    for _ in range(N_CANDIDATES):
+    for _ in range(effort):
         order = rooms[:]
         rng.shuffle(order)
+        lock = rng.choice(axis_options)
         groups = deal_to_regions(order, regions)
         placed = []
         for ri, (region, group) in enumerate(zip(regions, groups)):
@@ -366,10 +377,10 @@ def best_split(regions, rooms, fixed, fp, gx, gy, root_types, rng, tag="F"):
             # surplus becomes a landing or an open terrace rather than being
             # smeared back over the rooms.
             slack = region.area - sum(areas)
-            if slack > 0.75:
+            if slack >= ROOM_SPECS["corridor"]["min"]:
                 filler = "corridor" if slack <= ROOM_SPECS["corridor"]["max"] else "open_terrace"
                 candidate.append({"id": f"{tag}_{filler}_r{ri}", "type": filler, "area": slack})
-            placed += split(region, candidate, gx, gy)
+            placed += split(region, candidate, gx, gy, lock)
         unreach, vent, size_bad, adj, penalty = evaluate_layout(placed, fixed, fp, root_types)
         key = (unreach, vent, size_bad, -adj, penalty)
         if best_key is None or key < best_key:
@@ -428,7 +439,6 @@ def build_room_requests(spec: ProjectSpec):
     for f in sorted(floor_rooms):
         if f == 0:
             continue
-        floor_rooms[f].append("corridor")       # landing, keeps front rooms reachable
         if spec.balcony:
             floor_rooms[f].append("balcony")
 
@@ -441,8 +451,9 @@ def build_room_requests(spec: ProjectSpec):
 # Footprint, core, parking
 # ---------------------------------------------------------------------------
 
-def compute_footprint(spec: ProjectSpec, bw: float, bd: float,
-                      floor_rooms: dict, has_stair: bool) -> Rect:
+def compute_footprint(spec: ProjectSpec, bw: float, bd: float, floor_rooms: dict,
+                      has_stair: bool, corridor_extra: float = 0.0,
+                      min_width: float = 0.0, reserve_parking: bool = True) -> Rect:
     """Size the building from the PROGRAMME, not from the plot.
 
     The old engine tiled the whole envelope, so a bigger plot simply inflated
@@ -450,12 +461,13 @@ def compute_footprint(spec: ProjectSpec, bw: float, bd: float,
     by the envelope -- which is also what makes ground coverage a real number
     instead of a restatement of the setbacks."""
     need = 0.0
-    for types in floor_rooms.values():
+    for idx, types in floor_rooms.items():
         t = list(types) + (["staircase"] if has_stair else [])
-        need = max(need, programme_area(t))
+        extra = corridor_extra if idx > 0 else 0.0
+        need = max(need, programme_area(t) + extra)
 
     avail_d = bd
-    if spec.parking:
+    if spec.parking and reserve_parking:
         # keep a strip at the front of the envelope open for the car + approach
         avail_d = max(bd * 0.45, bd - PARKING_LEN)
     max_area = bw * avail_d
@@ -465,6 +477,15 @@ def compute_footprint(spec: ProjectSpec, bw: float, bd: float,
     fd = math.sqrt(target / ratio) if ratio > 0 else avail_d
     fw = target / fd if fd > 0 else bw
     fw, fd = min(fw, bw), min(fd, avail_d)
+
+    # Rooms are dealt along the corridor, which runs across the WIDTH. A house
+    # proportioned narrow-and-deep cannot fit a row of bedrooms at their
+    # minimum width no matter how much total area it has, so widen it first and
+    # take the depth back.
+    if min_width > 0 and fw < min_width:
+        fw = min(bw, min_width)
+        fd = min(avail_d, target / fw) if fw > 0 else fd
+
     if fw * fd < target - 1e-6:                 # clamping lost area -- grow the other side
         if fw < bw - 1e-6:
             fw = min(bw, target / fd)
@@ -477,40 +498,34 @@ def compute_footprint(spec: ProjectSpec, bw: float, bd: float,
 
 
 def make_core(fp: Rect, gx: list, gy: list):
-    """Circulation core: one edge bay-column holding the stair at the rear and
-    the entrance (ground) or landing (upper) at the front. Taking an EDGE
-    column is what leaves the remainder a clean rectangle; taking an interior
-    one would break the plate into two pieces.
+    """The stair is a block in the REAR-RIGHT corner, sized close to its ideal
+    area. Putting it there (rather than in a full-depth column) leaves a rear
+    BAND beside it, which becomes the second row of a double-loaded corridor --
+    without that band an upper floor collapses into a single row of rooms and
+    everything comes out too narrow to use.
 
-    Returns (stair_rect, core_front_rect|None, main_rect)."""
-    if len(gx) >= 3:
-        core_x0, core_x1 = gx[-2], gx[-1]
-        core = Rect(core_x0, fp.y, core_x1 - core_x0, fp.h)
-        main = Rect(fp.x, fp.y, core_x0 - fp.x, fp.h)
-    else:                                        # too narrow to spare a column
-        core = Rect(fp.x, fp.y, fp.w, fp.h)
-        main = None
-
-    spec_row = ROOM_SPECS["staircase"]
-    ideal, minimum, stair_min_w = spec_row["ideal"], spec_row["min"], spec_row["min_w"]
+    Returns (stair_rect, rear_band_rect, front_rect). All three are rectangles,
+    and all three are identical on every floor, so alignment is structural."""
+    row = ROOM_SPECS["staircase"]
+    ideal, stair_min_w = row["ideal"], row["min_w"]
     rear = fp.y + fp.h
-    cands = []
-    for line in gy[:-1]:                         # preferred: whole grid rows
-        depth = rear - line
-        if core.w * depth >= minimum - 1e-6 and min(core.w, depth) >= stair_min_w - 1e-6:
-            cands.append((abs(core.w * depth - ideal), line))
-    depth = min(max(stair_min_w, ideal / core.w if core.w > 0 else stair_min_w), fp.h * 0.6)
-    line = rear - depth
-    if line > fp.y + 0.6 and core.w * depth >= minimum - 1e-6:
-        # fallback: a partition across the core column. It sits inside a bay and
-        # is carried by the slab, so it needs no column under it.
-        cands.append((abs(core.w * depth - ideal), line))
-    best = min(cands)[1] if cands else (gy[-2] if len(gy) >= 2 else fp.y)
 
-    stair = Rect(core.x, best, core.w, rear - best)
-    front_h = best - fp.y
-    core_front = Rect(core.x, fp.y, core.w, front_h) if front_h > 0.6 else None
-    return stair, core_front, main
+    # rear band deep enough to hold a usable row of rooms
+    band_d = min(fp.h * 0.45, max(3.1, stair_min_w + 0.7))
+    band_d = max(band_d, stair_min_w)
+    stair_w = min(max(stair_min_w, ideal / band_d), fp.w * 0.45)
+
+    # prefer a grid line for the band edge when one is close by -- the band edge
+    # is a full-width wall, so it is worth landing on a beam line
+    near = [v for v in gy if abs(v - (rear - band_d)) < 0.6 and fp.y + 1.0 < v < rear - 1.0]
+    if near:
+        band_d = rear - min(near, key=lambda v: abs(v - (rear - band_d)))
+        stair_w = min(max(stair_min_w, ideal / band_d), fp.w * 0.45)
+
+    stair = Rect(fp.x + fp.w - stair_w, rear - band_d, stair_w, band_d)
+    rear_band = Rect(fp.x, rear - band_d, fp.w - stair_w, band_d)
+    front = Rect(fp.x, fp.y, fp.w, fp.h - band_d)
+    return stair, rear_band, front
 
 
 def place_parking(fp: Rect, bw: float, bd: float, entrance_rect):
@@ -626,7 +641,12 @@ def compute_columns(gx: list, gy: list) -> list:
 # Top level
 # ---------------------------------------------------------------------------
 
-def generate_plan(spec: ProjectSpec) -> dict:
+def generate_plan(spec: ProjectSpec, effort: int = N_CANDIDATES) -> dict:
+    """`effort` is the number of layout candidates searched. Lowering it trades
+    layout quality for speed and never makes a plan look BETTER than the full
+    search would -- the objective is minimised over candidates, so more
+    candidates can only match or beat fewer. That one-sidedness is what lets
+    the advisor screen fixes at reduced effort and still trust a clean verdict."""
     plot_w, plot_d = ft_to_m(spec.plot_width_ft), ft_to_m(spec.plot_depth_ft)
     bw = plot_w - (spec.setback_left_m + spec.setback_right_m)
     bd = plot_d - (spec.setback_front_m + spec.setback_rear_m)
@@ -647,33 +667,89 @@ def generate_plan(spec: ProjectSpec) -> dict:
                             f"{bw:.2f} x {bd:.2f} m. Increase plot size or reduce setbacks.")
         return result
 
-    floor_rooms, has_stair, notes = build_room_requests(spec)
-    has_stair = has_stair and len(floor_rooms) > 1   # floors may have been dropped
+    def plan_for(active: ProjectSpec):
+        """Programme + footprint for a given brief, with the shortfall (if any).
+        Returns (floor_rooms, has_stair, notes, footprint, shortfall)."""
+        fr, hs, ns = build_room_requests(active)
+        hs = hs and len(fr) > 1              # floors may have been dropped
+
+        def shortfall_of(candidate: Rect):
+            for idx in sorted(fr):
+                types = list(fr[idx]) + (["staircase"] if hs else [])
+                need = sum(ROOM_SPECS[t]["min"] for t in types)
+                if hs and idx > 0:
+                    need += candidate.w * CORRIDOR_W   # the landing is floor area too
+                if need > candidate.area + 1e-6:
+                    return idx, need
+            return None
+
+        upper = [len(v) for k, v in fr.items() if k > 0]
+        per_row = max(1, math.ceil(max(upper) / 2)) if upper else 1
+        row_w = per_row * ROOM_SPECS["bedroom"]["min_w"] if hs else 0.0
+
+        cand = compute_footprint(active, bw, bd, fr, hs, min_width=row_w)
+        # On a shallow plot, holding a full car length clear in front of the
+        # house can leave less ground than the house itself needs. The building
+        # wins; the parking check then reports that the car no longer fits.
+        if active.parking and shortfall_of(cand) is not None:
+            relaxed = compute_footprint(active, bw, bd, fr, hs, min_width=row_w,
+                                        reserve_parking=False)
+            if shortfall_of(relaxed) is None:
+                cand = relaxed
+                ns = ns + ["The plot is too shallow to keep a full car length clear in "
+                           "front of the house, so the building was given that ground "
+                           "instead. Parking will need the front setback or the street."]
+        short = shortfall_of(cand)
+        if short is None:                     # second pass, corridor width now known
+            grown = compute_footprint(active, bw, bd, fr, hs,
+                                      corridor_extra=cand.w * CORRIDOR_W,
+                                      min_width=row_w, reserve_parking=cand.y > 0.01)
+            if shortfall_of(grown) is None:
+                cand = grown
+        return fr, hs, ns, cand, short
+
+    floor_rooms, has_stair, notes, fp_probe, shortfall = plan_for(spec)
+
+    # A designer whose floor will not close drops the optional things first.
+    # Balconies are the cheapest thing to give up, so try that before declaring
+    # the brief impossible.
+    if shortfall is not None and spec.balcony:
+        trimmed = spec.model_copy(update={"balcony": False})
+        alt = plan_for(trimmed)
+        if alt[4] is None:
+            floor_rooms, has_stair, notes, fp_probe, shortfall = alt
+            notes = notes + ["Balconies were dropped: the floors could not close with "
+                             "them at minimum room sizes. Enlarge the plot or reduce the "
+                             "bedroom count to get them back."]
+            spec = trimmed
+
     result["notes"] = notes
     n_floors = len(floor_rooms)
 
-    # -- feasibility, PER FLOOR: an aggregate check passes plans whose
-    # -- individual floors are impossible, which is how undersized rooms used
-    # -- to slip through and get drawn anyway.
-    fp_probe = compute_footprint(spec, bw, bd, floor_rooms, has_stair)
-    for idx in sorted(floor_rooms):
-        types = list(floor_rooms[idx]) + (["staircase"] if has_stair else [])
-        need_min = sum(ROOM_SPECS[t]["min"] for t in types)
-        if need_min > fp_probe.area + 1e-6:
-            result["ok"] = False
-            result["reason"] = (
-                f"Floor {idx} needs at least {need_min:.1f} m2 for its rooms but the "
-                f"buildable footprint is only {fp_probe.area:.1f} m2 "
-                f"({bw:.1f} x {bd:.1f} m envelope). Enlarge the plot, reduce the room "
-                f"count on this floor, or add a floor.")
-            return result
+    if shortfall is not None:
+        idx, need_min = shortfall
+        result["ok"] = False
+        result["reason"] = (
+            f"Floor {idx} needs at least {need_min:.1f} m2 for its rooms but the "
+            f"buildable footprint is only {fp_probe.area:.1f} m2 "
+            f"({bw:.1f} x {bd:.1f} m envelope). Enlarge the plot, reduce the room "
+            f"count on this floor, or add a floor.")
+        return result
 
     fp = fp_probe
     gx, gy = make_grid(fp)
 
-    stair_rect, core_front, main_rect = (None, None, fp)
+    stair_rect = rear_band = front_rect = None
+    corridor_rect = up_front = None
     if has_stair:
-        stair_rect, core_front, main_rect = make_core(fp, gx, gy)
+        stair_rect, rear_band, front_rect = make_core(fp, gx, gy)
+        # A landing the full width of the floor, immediately in front of the
+        # rear band. Rooms sit on BOTH sides of it, so every one opens onto the
+        # corridor -- which is what "reachable from the front door" needs, and
+        # two rows is what keeps them wide enough to use.
+        cw = min(CORRIDOR_W, max(0.9, front_rect.h * 0.2))
+        corridor_rect = Rect(fp.x, stair_rect.y - cw, fp.w, cw)
+        up_front = Rect(fp.x, fp.y, fp.w, front_rect.h - cw)
 
     result["footprint"] = {"x": round(fp.x, 3), "y": round(fp.y, 3),
                            "w": round(fp.w, 3), "h": round(fp.h, 3),
@@ -691,18 +767,23 @@ def generate_plan(spec: ProjectSpec) -> dict:
         types = floor_rooms[floor_idx]
         rooms = [{"id": f"F{floor_idx}_{t}_{k}", "type": t} for k, t in enumerate(types)]
 
-        fixed = []
+        fixed, axis_lock = [], None
+        root_types = ("entrance",) if floor_idx == 0 else ("staircase",)
         if has_stair:
             fixed = [({"id": f"F{floor_idx}_staircase_0", "type": "staircase"}, stair_rect)]
-        root_types = ("entrance",) if floor_idx == 0 else ("staircase",)
 
-        if has_stair:
-            regions = [r for r in (main_rect, core_front) if r is not None and r.area > 1e-6]
+        if has_stair and floor_idx > 0:
+            fixed.append(({"id": f"F{floor_idx}_corridor_0", "type": "corridor"}, corridor_rect))
+            regions = [r for r in (up_front, rear_band) if r is not None and r.area > 0.5]
+            axis_lock = "x"
+        elif has_stair:
+            regions = [r for r in (front_rect, rear_band) if r is not None and r.area > 0.5]
         else:
             regions = [fp]
 
-        placed, score = best_split(regions, rooms, fixed, fp, gx, gy,
-                                   root_types, rng, tag=f"F{floor_idx}")
+        placed, score = best_split(regions, rooms, fixed, fp, gx, gy, root_types,
+                                   rng, tag=f"F{floor_idx}", axis_lock=axis_lock,
+                                   effort=effort)
         total_score += score
         items = fixed + placed
         doors, windows, adj_lines, reachable, parent_of = compute_openings(items, fp, root_types)

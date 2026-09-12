@@ -1,5 +1,100 @@
 # SmartCAD — Code Understanding
 
+> ## ⚠ SUPERSEDED BELOW — read this section first
+>
+> Sections 3 onwards describe the **original** build. That engine was rewritten
+> after a design review found that it satisfied its own tests while producing
+> plans that could not be built. What follows is the current design; the older
+> sections are kept because the contrast is the point, but where they disagree
+> with this section, this section is correct.
+
+## What the original engine got wrong
+
+The old objective function contained **only room-to-room terms**
+(`shared_wall × adjacency_weight`, plus aspect and width penalties). Every real
+planning rule is either a room-to-*boundary* rule or a room-to-*graph* rule, and
+it could express neither. Exterior walls were detected, but only in
+`compute_openings()` — *after* placement was frozen — so they decided where
+windows were drawn, never where rooms went. Concretely, the default 30×40 ft
+2-storey plan shipped with:
+
+| Symptom | Cause |
+|---|---|
+| Upper bathroom sealed inside the plan, 0 windows | no ventilation constraint anywhere, in engine or validator |
+| Balcony landlocked in the middle of the house | balcony was tiled as an ordinary interior room |
+| Front door in the centre of the house, **no exterior door at all** | no concept of which plot edge is the street |
+| A car parked inside the living area | parking was a room in the tiled footprint |
+| 36 m² bathroom on a large plot | only the *minimum* area was clamped, never the maximum |
+| Whole empty storeys, fully costed | `ceil()` bedroom distribution front-loaded floor 1 |
+| Cost unchanged by adding bedrooms | built-up area was envelope × floors, not the building |
+| Columns that did not line up between floors | each floor was laid out independently |
+
+The four `__main__` assertions passed throughout, because they only checked
+tiling invariants — exactly the properties `split()` guarantees by
+construction. They could not fail. See `tests.py` for the replacement.
+
+## The current design
+
+**Rule A** metres internally, feet only at the input boundary.
+**Rule B** all geometry lives in `engine.py`; renderers only draw.
+**Rule C** `y = 0` is the STREET side. "Front" always means smaller y. The
+engine, validator and both renderers depend on this.
+**Rule D** ONE structural grid for the whole building. Columns sit at grid
+intersections and are therefore continuous foundation→roof *by construction*.
+Upper floors may arrange rooms differently; they may not move the grid.
+
+Pipeline:
+
+```
+envelope
+  -> room programme          build_room_requests()   round-robin, drops phantom storeys
+  -> footprint sizing        compute_footprint()     sized from the PROGRAMME, not the plot
+  -> structural grid         make_grid()             3.0-4.5 m bays, computed once
+  -> stair + corridor core   make_core()             rear-corner stair, double-loaded landing
+  -> grid-snapped tiling     split()                 snaps to a beam line when close, else a partition
+  -> hard-constraint search  best_split()            500-900 candidates
+  -> circulation graph       build_access_graph()    reachability from the front door
+  -> openings + columns      compute_openings()
+```
+
+The search ranks candidates **lexicographically**, lowest wins:
+
+```
+(unreachable rooms, ventilation/position failures, size failures,
+ -adjacency score, penalty magnitude)
+```
+
+The order is the whole point. A plan nobody can walk through, or one with a
+windowless bathroom, is worse than one that merely scores badly on adjacency —
+so those terms outrank the adjacency score rather than being blended into it.
+
+Three rules that are now enforced rather than hoped for:
+
+* **Ventilation** — `exterior_violations()` is a hard term. A room whose spec
+  says `exterior: required` must touch the footprint boundary; `front` must sit
+  on the street edge. This is why a bathroom can no longer be sealed inside.
+* **Circulation** — `build_access_graph()` walks a fixpoint from the front door
+  (or the landing, upstairs), following only edges `ACCESS_PARENTS` permits.
+  Terminal rooms are never routed through, so no path crosses a bedroom. Doors
+  are then cut on exactly the edges the graph used — which is also why no door
+  is emitted twice.
+* **Structure** — the grid is built once from the footprint. Partition walls
+  inside a bay are allowed and carried by the slab; only the columns are fixed,
+  and they cannot drift because no floor ever recomputes them.
+
+Wall-sharing and door-opening are now separate concerns: `ADJACENCY` scores
+which rooms benefit from a shared wall (a bathroom next to a kitchen is *good* —
+one plumbing stack), while `ACCESS_PARENTS` says what a room may open into (a
+WC may not open into a kitchen). Conflating the two is what made the old table
+push bathrooms away from kitchens.
+
+Parking and balconies are no longer rooms: parking is open ground between the
+house and the street, taking no built-up area, no FAR and no structure cost;
+balconies and terraces are `open`, rendered with a parapet and no roof, and
+billed at half rate.
+
+---
+
 This file documents everything that was coded in this project: what each
 file does, how each function works, why it works that way, and how data
 flows end to end. It reflects the code **as it currently stands on disk**
