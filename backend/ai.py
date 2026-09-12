@@ -11,7 +11,7 @@ MODEL_NAME = "gemini-3.8-flash"
 
 
 def _get_client():
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = "AQ.Ab8RN6KeHh09YAo8qR2EbO0M3so62GFSuZ-HQyUOg_sUUzcUjw"
     if not api_key:
         return None
     try:
